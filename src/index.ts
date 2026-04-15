@@ -226,32 +226,45 @@ app.get("/health", (_req, res) => {
 
 // Streamable HTTP endpoint — handles POST, GET (SSE stream), DELETE
 app.post("/mcp", async (req: Request, res: Response) => {
-  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  try {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
-  if (sessionId && transports[sessionId]) {
-    // Existing session
-    await transports[sessionId].handleRequest(req, res);
-    return;
+    if (sessionId && transports[sessionId]) {
+      // Existing session — route request to it
+      console.log(`Existing session request: ${sessionId}`);
+      await transports[sessionId].handleRequest(req, res);
+      return;
+    }
+
+    // New session (initialize) — create transport, handle request, THEN store
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+    });
+
+    const mcpServer = createSessionServer();
+    await mcpServer.connect(transport);
+
+    // handleRequest processes the initialize and sets the sessionId
+    await transport.handleRequest(req, res);
+
+    // NOW the sessionId is available
+    const sid = transport.sessionId;
+    if (sid) {
+      transports[sid] = transport;
+      console.log(`New session created: ${sid}`);
+      transport.onclose = () => {
+        console.log(`Session closed: ${sid}`);
+        delete transports[sid];
+      };
+    } else {
+      console.log("Warning: session created but no sessionId assigned");
+    }
+  } catch (err) {
+    console.error("Error in POST /mcp:", err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Internal server error" });
+    }
   }
-
-  // New session (initialize)
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
-  });
-
-  const mcpServer = createSessionServer();
-  await mcpServer.connect(transport);
-
-  const sid = transport.sessionId!;
-  transports[sid] = transport;
-  console.log(`New session: ${sid}`);
-
-  transport.onclose = () => {
-    console.log(`Session closed: ${sid}`);
-    delete transports[sid];
-  };
-
-  await transport.handleRequest(req, res);
 });
 
 app.get("/mcp", async (req: Request, res: Response) => {
