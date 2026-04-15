@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import http from "node:http";
 
@@ -76,10 +77,7 @@ function formatRecord(r: LicenseRecord): string {
   ].filter(Boolean).join("\n");
 }
 
-const server = new McpServer({
-  name: "idfpr-mcp-server",
-  version: "1.0.0",
-});
+function registerTools(server: McpServer) {
 
 // Tool 1: Search by name
 server.tool(
@@ -218,12 +216,26 @@ server.tool(
   }
 );
 
+} // end registerTools
+
 // --- HTTP Transport for Railway ---
 // Supports both Streamable HTTP (/mcp) and legacy SSE (/sse + /messages)
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
+// Session-based transport maps
+const httpTransports: Record<string, StreamableHTTPServerTransport> = {};
 const sseTransports: Record<string, SSEServerTransport> = {};
+
+function createNewMcpServer(): McpServer {
+  // Each session needs its own McpServer instance with tools registered
+  const s = new McpServer({
+    name: "idfpr-mcp-server",
+    version: "1.0.0",
+  });
+  registerTools(s);
+  return s;
+}
 
 const httpServer = http.createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://localhost:${PORT}`);
@@ -249,35 +261,62 @@ const httpServer = http.createServer(async (req, res) => {
 
   // ---- Streamable HTTP transport at /mcp ----
   if (url.pathname === "/mcp") {
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-    });
-    await server.connect(transport);
-    await transport.handleRequest(req, res);
+    // Check for existing session
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+    if (sessionId && httpTransports[sessionId]) {
+      // Existing session — route to its transport
+      await httpTransports[sessionId].handleRequest(req, res);
+      return;
+    }
+
+    if (req.method === "POST") {
+      // New session — create transport + server
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+      });
+
+      const newServer = createNewMcpServer();
+      await newServer.connect(transport);
+
+      const newSessionId = transport.sessionId!;
+      httpTransports[newSessionId] = transport;
+
+      // Clean up on close
+      transport.onclose = () => {
+        delete httpTransports[newSessionId];
+      };
+
+      await transport.handleRequest(req, res);
+      return;
+    }
+
+    // GET/DELETE without a valid session
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "No valid session. Send an initialize POST first." }));
     return;
   }
 
   // ---- Legacy SSE transport ----
-  // SSE endpoint — client connects here
   if (url.pathname === "/sse" && req.method === "GET") {
     const transport = new SSEServerTransport("/messages", res);
     sseTransports[transport.sessionId] = transport;
     res.on("close", () => {
       delete sseTransports[transport.sessionId];
     });
-    await server.connect(transport);
+    const newServer = createNewMcpServer();
+    await newServer.connect(transport);
     return;
   }
 
-  // Messages endpoint — client sends messages here
   if (url.pathname === "/messages" && req.method === "POST") {
-    const sessionId = url.searchParams.get("sessionId");
-    if (!sessionId || !sseTransports[sessionId]) {
+    const sid = url.searchParams.get("sessionId");
+    if (!sid || !sseTransports[sid]) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Invalid or missing sessionId" }));
       return;
     }
-    await sseTransports[sessionId].handlePostMessage(req, res);
+    await sseTransports[sid].handlePostMessage(req, res);
     return;
   }
 
