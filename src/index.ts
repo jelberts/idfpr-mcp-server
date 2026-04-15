@@ -1,8 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import express, { Request, Response } from "express";
+import cors from "cors";
 
 // ---- SODA API config ----
 
@@ -77,7 +79,7 @@ function formatRecord(r: LicenseRecord): string {
   ].filter(Boolean).join("\n");
 }
 
-// ---- Register MCP tools ----
+// ---- Register MCP tools on a server instance ----
 
 function registerTools(server: McpServer) {
   server.tool(
@@ -199,93 +201,100 @@ function registerTools(server: McpServer) {
   );
 }
 
-// ---- Express + Streamable HTTP Transport ----
+// ---- Express Server + Streamable HTTP Transport ----
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const app = express();
 
-// Parse JSON request bodies — required for StreamableHTTPServerTransport
+app.use(cors());
 app.use(express.json());
 
-// Store active transports by session ID
+// Session store
 const transports: Record<string, StreamableHTTPServerTransport> = {};
-
-function createSessionServer(): McpServer {
-  const s = new McpServer({ name: "idfpr-mcp-server", version: "1.0.0" });
-  registerTools(s);
-  return s;
-}
 
 // Health check
 app.get("/", (_req, res) => {
-  res.json({ status: "ok", server: "idfpr-mcp-server" });
-});
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok", server: "idfpr-mcp-server" });
+  res.json({ status: "ok", server: "idfpr-mcp-server", sessions: Object.keys(transports).length });
 });
 
-// Streamable HTTP endpoint — handles POST, GET (SSE stream), DELETE
+// POST /mcp — initialize new sessions and handle JSON-RPC requests
 app.post("/mcp", async (req: Request, res: Response) => {
   try {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
+    // Route to existing session
     if (sessionId && transports[sessionId]) {
-      // Existing session — route request to it
-      console.log(`Existing session request: ${sessionId}`);
-      await transports[sessionId].handleRequest(req, res);
+      console.log(`[POST] Existing session: ${sessionId}`);
+      await transports[sessionId].handleRequest(req, res, req.body);
       return;
     }
 
-    // New session (initialize) — create transport, handle request, THEN store
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-    });
+    // Only create new session for initialize requests
+    if (isInitializeRequest(req.body)) {
+      console.log("[POST] New initialize request received");
 
-    const mcpServer = createSessionServer();
-    await mcpServer.connect(transport);
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sid: string) => {
+          console.log(`[POST] Session initialized: ${sid}`);
+          transports[sid] = transport;
+        },
+      });
 
-    // handleRequest processes the initialize and sets the sessionId
-    await transport.handleRequest(req, res);
-
-    // NOW the sessionId is available
-    const sid = transport.sessionId;
-    if (sid) {
-      transports[sid] = transport;
-      console.log(`New session created: ${sid}`);
       transport.onclose = () => {
-        console.log(`Session closed: ${sid}`);
-        delete transports[sid];
+        const sid = transport.sessionId;
+        if (sid) {
+          console.log(`[CLOSE] Session closed: ${sid}`);
+          delete transports[sid];
+        }
       };
-    } else {
-      console.log("Warning: session created but no sessionId assigned");
+
+      const mcpServer = new McpServer({ name: "idfpr-mcp-server", version: "1.0.0" });
+      registerTools(mcpServer);
+      await mcpServer.connect(transport);
+
+      await transport.handleRequest(req, res, req.body);
+      return;
     }
+
+    // Not an initialize request and no valid session
+    console.log("[POST] Bad request: not initialize and no valid session");
+    res.status(400).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Bad request: no valid session" },
+      id: null,
+    });
   } catch (err) {
-    console.error("Error in POST /mcp:", err);
+    console.error("[POST] Error:", err);
     if (!res.headersSent) {
       res.status(500).json({ error: "Internal server error" });
     }
   }
 });
 
+// GET /mcp — SSE stream for server-to-client notifications
 app.get("/mcp", async (req: Request, res: Response) => {
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
   if (!sessionId || !transports[sessionId]) {
     res.status(400).json({ error: "Invalid or missing session ID" });
     return;
   }
+  console.log(`[GET] SSE stream for session: ${sessionId}`);
   await transports[sessionId].handleRequest(req, res);
 });
 
+// DELETE /mcp — terminate session
 app.delete("/mcp", async (req: Request, res: Response) => {
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
   if (!sessionId || !transports[sessionId]) {
     res.status(400).json({ error: "Invalid or missing session ID" });
     return;
   }
+  console.log(`[DELETE] Closing session: ${sessionId}`);
   await transports[sessionId].handleRequest(req, res);
 });
 
 app.listen(PORT, () => {
   console.log(`IDFPR MCP Server running on http://localhost:${PORT}`);
-  console.log(`Streamable HTTP endpoint: http://localhost:${PORT}/mcp`);
+  console.log(`Streamable HTTP endpoint: /mcp`);
 });
