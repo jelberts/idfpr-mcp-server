@@ -204,6 +204,9 @@ function registerTools(server: McpServer) {
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const app = express();
 
+// Parse JSON request bodies — required for StreamableHTTPServerTransport
+app.use(express.json());
+
 // Store active transports by session ID
 const transports: Record<string, StreamableHTTPServerTransport> = {};
 
