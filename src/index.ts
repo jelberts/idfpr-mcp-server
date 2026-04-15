@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import http from "node:http";
 
@@ -217,19 +218,21 @@ server.tool(
   }
 );
 
-// --- HTTP + SSE Transport for Railway ---
+// --- HTTP Transport for Railway ---
+// Supports both Streamable HTTP (/mcp) and legacy SSE (/sse + /messages)
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
-const transports: Record<string, SSEServerTransport> = {};
+const sseTransports: Record<string, SSEServerTransport> = {};
 
 const httpServer = http.createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://localhost:${PORT}`);
 
   // CORS headers
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Mcp-Session-Id");
+  res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -244,12 +247,23 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // ---- Streamable HTTP transport at /mcp ----
+  if (url.pathname === "/mcp") {
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+    });
+    await server.connect(transport);
+    await transport.handleRequest(req, res);
+    return;
+  }
+
+  // ---- Legacy SSE transport ----
   // SSE endpoint — client connects here
   if (url.pathname === "/sse" && req.method === "GET") {
     const transport = new SSEServerTransport("/messages", res);
-    transports[transport.sessionId] = transport;
+    sseTransports[transport.sessionId] = transport;
     res.on("close", () => {
-      delete transports[transport.sessionId];
+      delete sseTransports[transport.sessionId];
     });
     await server.connect(transport);
     return;
@@ -258,12 +272,12 @@ const httpServer = http.createServer(async (req, res) => {
   // Messages endpoint — client sends messages here
   if (url.pathname === "/messages" && req.method === "POST") {
     const sessionId = url.searchParams.get("sessionId");
-    if (!sessionId || !transports[sessionId]) {
+    if (!sessionId || !sseTransports[sessionId]) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Invalid or missing sessionId" }));
       return;
     }
-    await transports[sessionId].handlePostMessage(req, res);
+    await sseTransports[sessionId].handlePostMessage(req, res);
     return;
   }
 
@@ -273,5 +287,6 @@ const httpServer = http.createServer(async (req, res) => {
 
 httpServer.listen(PORT, () => {
   console.log(`IDFPR MCP Server running on http://localhost:${PORT}`);
-  console.log(`SSE endpoint: http://localhost:${PORT}/sse`);
+  console.log(`Streamable HTTP: http://localhost:${PORT}/mcp`);
+  console.log(`Legacy SSE: http://localhost:${PORT}/sse`);
 });
