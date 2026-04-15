@@ -263,12 +263,6 @@ const httpServer = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: "Invalid or missing sessionId" }));
       return;
     }
-    const body = await new Promise<string>((resolve) => {
-      let data = "";
-      req.on("data", (chunk) => (data += chunk));
-      req.on("end", () => resolve(data));
-    });
-    req.body = body;
     await transports[sessionId].handlePostMessage(req, res);
     return;
   }
