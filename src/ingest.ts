@@ -243,8 +243,18 @@ export async function runIngestion(): Promise<string> {
       log(`[ingest] Fetched ${records.length} records from Socrata API`);
 
       if (records.length > 0) {
+        // Debug: log first record's keys and license_number
+        const first = records[0];
+        log(`[ingest] First record keys: ${Object.keys(first).join(", ")}`);
+        log(`[ingest] First record license_number: "${first.license_number}"`);
+        log(`[ingest] Sample license_numbers: ${records.slice(0, 5).map(r => r.license_number).join(", ")}`);
+
         const upserted = await upsertRecords(records);
         log(`[ingest] Upserted ${upserted} records into PostgreSQL`);
+
+        // Verify count right after upsert
+        const verifyCount = await pool.query<{ count: string }>(`SELECT COUNT(*) as count FROM licenses`);
+        log(`[ingest] Verified count after upsert: ${verifyCount.rows[0].count}`);
       }
 
       const newOffset = offset + records.length;
