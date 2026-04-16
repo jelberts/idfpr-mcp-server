@@ -224,13 +224,65 @@ export async function runIngestion(): Promise<string> {
 
   log(`[ingest] Starting ingestion run at ${new Date().toISOString()}`);
 
-  const state = await getIngestState();
-  log(`[ingest] Current state: phase=${state.phase}, offset=${state.current_offset}, complete=${state.initial_load_complete}`);
+  try {
+    const state = await getIngestState();
+    log(`[ingest] Current state: phase=${state.phase}, offset=${state.current_offset}, complete=${state.initial_load_complete}`);
 
-  if (state.phase === "initial_load" && !state.initial_load_complete) {
-    await runInitialLoad();
-  } else {
-    await runDeltaSync();
+    if (state.phase === "initial_load" && !state.initial_load_complete) {
+      log(`[ingest] Running initial load from offset ${state.current_offset}...`);
+
+      const offset = state.current_offset as number;
+      const typeFilter = `license_type in('${ALLOWED_LICENSE_TYPES.join("','")}')`;
+      const records = await fetchFromSoda({
+        $where: typeFilter,
+        $order: "license_number",
+        $limit: String(BATCH_SIZE),
+        $offset: String(offset),
+      });
+
+      log(`[ingest] Fetched ${records.length} records from Socrata API`);
+
+      if (records.length > 0) {
+        const upserted = await upsertRecords(records);
+        log(`[ingest] Upserted ${upserted} records into PostgreSQL`);
+      }
+
+      const newOffset = offset + records.length;
+      const isComplete = records.length < BATCH_SIZE;
+
+      let watermark = state.last_modified_watermark;
+      if (records.length > 0) {
+        const maxMod = records
+          .map((r) => r.lastmodifieddate)
+          .filter(Boolean)
+          .sort()
+          .pop();
+        if (maxMod && (!watermark || maxMod > watermark)) {
+          watermark = maxMod;
+        }
+      }
+
+      await pool.query(
+        `UPDATE ingest_state SET
+          current_offset = $1,
+          total_ingested = total_ingested + $2,
+          last_run_at = NOW(),
+          last_modified_watermark = COALESCE($3, last_modified_watermark),
+          initial_load_complete = $4,
+          phase = $5
+        WHERE id = 1`,
+        [newOffset, records.length, watermark, isComplete, isComplete ? "delta_sync" : "initial_load"]
+      );
+
+      log(isComplete
+        ? `[ingest] Initial load COMPLETE at offset ${newOffset}`
+        : `[ingest] Next offset: ${newOffset}`);
+    } else {
+      log(`[ingest] Running delta sync...`);
+      await runDeltaSync();
+    }
+  } catch (err) {
+    log(`[ingest] ERROR: ${String(err)}`);
   }
 
   const countResult = await pool.query<{ count: string }>(
