@@ -192,8 +192,8 @@ app.get("/", async (_req, res) => {
   });
 });
 
-// POST /ingest — trigger ingestion on demand
-app.post("/ingest", async (_req: Request, res: Response) => {
+// GET & POST /ingest — trigger ingestion on demand
+const handleIngest = async (_req: Request, res: Response) => {
   try {
     console.log("[HTTP] Manual ingestion triggered");
     const output = await runIngestion();
@@ -202,7 +202,9 @@ app.post("/ingest", async (_req: Request, res: Response) => {
     console.error("[HTTP] Ingestion error:", err);
     res.status(500).json({ status: "error", message: String(err) });
   }
-});
+};
+app.get("/ingest", handleIngest);
+app.post("/ingest", handleIngest);
 
 // POST /mcp — initialize new sessions and handle JSON-RPC requests
 app.post("/mcp", async (req: Request, res: Response) => {
