@@ -115,7 +115,7 @@ async function runInitialLoad(): Promise<void> {
   const state = await getIngestState();
   const offset = state.current_offset as number;
 
-  const typeFilter = `license_type in('${ALLOWED_LICENSE_TYPES.join("','")}')`;
+  const typeFilter = `license_type in('${ALLOWED_LICENSE_TYPES.join("','")}') AND license_number IS NOT NULL AND license_number != ''`;
   const records = await fetchFromSoda({
     $where: typeFilter,
     $order: "license_number",
@@ -181,7 +181,7 @@ async function runDeltaSync(): Promise<void> {
     return runInitialLoad();
   }
 
-  const typeFilter = `license_type in('${ALLOWED_LICENSE_TYPES.join("','")}')`;
+  const typeFilter = `license_type in('${ALLOWED_LICENSE_TYPES.join("','")}') AND license_number IS NOT NULL AND license_number != ''`;
   const records = await fetchFromSoda({
     $where: `${typeFilter} AND lastmodifieddate > '${watermark}'`,
     $order: "lastmodifieddate",
@@ -232,7 +232,7 @@ export async function runIngestion(): Promise<string> {
       log(`[ingest] Running initial load from offset ${state.current_offset}...`);
 
       const offset = state.current_offset as number;
-      const typeFilter = `license_type in('${ALLOWED_LICENSE_TYPES.join("','")}')`;
+      const typeFilter = `license_type in('${ALLOWED_LICENSE_TYPES.join("','")}') AND license_number IS NOT NULL AND license_number != ''`;
       const records = await fetchFromSoda({
         $where: typeFilter,
         $order: "license_number",

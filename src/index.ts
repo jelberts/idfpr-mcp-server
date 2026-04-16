@@ -206,6 +206,18 @@ const handleIngest = async (_req: Request, res: Response) => {
 app.get("/ingest", handleIngest);
 app.post("/ingest", handleIngest);
 
+// GET /reset-ingest — wipe data and restart ingestion from scratch
+app.get("/reset-ingest", async (_req: Request, res: Response) => {
+  try {
+    console.log("[HTTP] Resetting ingestion state");
+    await pool.query(`DELETE FROM licenses`);
+    await pool.query(`UPDATE ingest_state SET phase='initial_load', current_offset=0, total_ingested=0, last_run_at=NULL, last_modified_watermark=NULL, initial_load_complete=FALSE WHERE id=1`);
+    res.json({ status: "ok", message: "Ingestion state reset. Database cleared. Ready for fresh load." });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: String(err) });
+  }
+});
+
 // POST /mcp — initialize new sessions and handle JSON-RPC requests
 app.post("/mcp", async (req: Request, res: Response) => {
   try {
