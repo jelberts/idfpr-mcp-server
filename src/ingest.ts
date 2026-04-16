@@ -216,15 +216,16 @@ async function runDeltaSync(): Promise<void> {
   }
 }
 
-// ---- Main ----
+// ---- Exported run function (used by HTTP endpoint and CLI) ----
 
-async function main() {
-  console.log(`[ingest] Starting ingestion run at ${new Date().toISOString()}`);
+export async function runIngestion(): Promise<string> {
+  const logs: string[] = [];
+  const log = (msg: string) => { console.log(msg); logs.push(msg); };
 
-  await initSchema();
+  log(`[ingest] Starting ingestion run at ${new Date().toISOString()}`);
 
   const state = await getIngestState();
-  console.log(`[ingest] Current state: phase=${state.phase}, offset=${state.current_offset}, complete=${state.initial_load_complete}`);
+  log(`[ingest] Current state: phase=${state.phase}, offset=${state.current_offset}, complete=${state.initial_load_complete}`);
 
   if (state.phase === "initial_load" && !state.initial_load_complete) {
     await runInitialLoad();
@@ -232,18 +233,27 @@ async function main() {
     await runDeltaSync();
   }
 
-  // Log summary
   const countResult = await pool.query<{ count: string }>(
     `SELECT COUNT(*) as count FROM licenses`
   );
-  console.log(`[ingest] Total records in database: ${countResult.rows[0].count}`);
-  console.log(`[ingest] Done.`);
+  log(`[ingest] Total records in database: ${countResult.rows[0].count}`);
+  log(`[ingest] Done.`);
 
-  await pool.end();
-  process.exit(0);
+  return logs.join("\n");
 }
 
-main().catch((err) => {
-  console.error("[ingest] Fatal error:", err);
-  process.exit(1);
-});
+// ---- CLI entrypoint (used by crontab) ----
+
+const isMainModule = process.argv[1]?.endsWith("ingest.js") || process.argv[1]?.endsWith("ingest.ts");
+
+if (isMainModule) {
+  (async () => {
+    await initSchema();
+    await runIngestion();
+    await pool.end();
+    process.exit(0);
+  })().catch((err) => {
+    console.error("[ingest] Fatal error:", err);
+    process.exit(1);
+  });
+}

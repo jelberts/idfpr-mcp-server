@@ -15,6 +15,7 @@ import {
   LicenseRow,
   pool,
 } from "./db.js";
+import { runIngestion } from "./ingest.js";
 
 // ---- Config ----
 
@@ -189,6 +190,18 @@ app.get("/", async (_req, res) => {
     sessions: Object.keys(transports).length,
     records_in_db: dbRecords,
   });
+});
+
+// POST /ingest — trigger ingestion on demand
+app.post("/ingest", async (_req: Request, res: Response) => {
+  try {
+    console.log("[HTTP] Manual ingestion triggered");
+    const output = await runIngestion();
+    res.json({ status: "ok", output });
+  } catch (err) {
+    console.error("[HTTP] Ingestion error:", err);
+    res.status(500).json({ status: "error", message: String(err) });
+  }
 });
 
 // POST /mcp — initialize new sessions and handle JSON-RPC requests
