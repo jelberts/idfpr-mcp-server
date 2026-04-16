@@ -5,57 +5,25 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import express, { Request, Response } from "express";
 import cors from "cors";
+import {
+  initSchema,
+  searchByName,
+  lookupByLicenseNumber,
+  verifyLicenseStatus,
+  listByLocation,
+  getRecordCount,
+  LicenseRow,
+  pool,
+} from "./db.js";
 
-// ---- SODA API config ----
+// ---- Config ----
 
-const SODA_BASE = "https://data.illinois.gov/resource/pzzh-kp68.json";
-const ALLOWED_LICENSE_TYPES = ["PROF. ENGINEER", "STRUCTURAL ENGINEER"];
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 1000;
 
-interface LicenseRecord {
-  license_type: string;
-  description: string;
-  license_number: string;
-  license_status: string;
-  business: string;
-  title: string;
-  first_name: string;
-  middle: string;
-  last_name: string;
-  prefix: string;
-  suffix: string;
-  business_name: string;
-  businessdba: string;
-  original_issue_date: string;
-  effective_date: string;
-  expiration_date: string;
-  city: string;
-  state: string;
-  zip: string;
-  county: string;
-  ever_disciplined: string;
-  lastmodifieddate: string;
-}
+// ---- Formatting ----
 
-async function querySODA(params: Record<string, string>): Promise<LicenseRecord[]> {
-  const url = new URL(SODA_BASE);
-  for (const [key, value] of Object.entries(params)) {
-    url.searchParams.set(key, value);
-  }
-  const response = await fetch(url.toString());
-  if (!response.ok) {
-    throw new Error(`SODA API error: ${response.status} ${response.statusText}`);
-  }
-  return response.json() as Promise<LicenseRecord[]>;
-}
-
-function buildWhereClause(conditions: string[]): string {
-  const typeFilter = `license_type in('${ALLOWED_LICENSE_TYPES.join("','")}')`;
-  return [typeFilter, ...conditions].join(" AND ");
-}
-
-function formatRecord(r: LicenseRecord): string {
+function formatRecord(r: LicenseRow): string {
   const name = r.business === "Y"
     ? r.business_name || r.businessdba || "(Business)"
     : [r.prefix, r.first_name, r.middle, r.last_name, r.suffix].filter(Boolean).join(" ") || "(No name)";
@@ -94,14 +62,7 @@ function registerTools(server: McpServer) {
       if (!first_name && !last_name) {
         return { content: [{ type: "text" as const, text: "Error: Provide at least a first_name or last_name." }] };
       }
-      const conditions: string[] = [];
-      if (first_name) conditions.push(`upper(first_name) like upper('%${first_name.replace(/'/g, "''")}%')`);
-      if (last_name) conditions.push(`upper(last_name) like upper('%${last_name.replace(/'/g, "''")}%')`);
-      const records = await querySODA({
-        $where: buildWhereClause(conditions),
-        $limit: String(limit || DEFAULT_LIMIT),
-        $order: "last_name,first_name",
-      });
+      const records = await searchByName(first_name, last_name, limit || DEFAULT_LIMIT);
       if (records.length === 0) {
         return { content: [{ type: "text" as const, text: "No matching engineers found." }] };
       }
@@ -117,10 +78,7 @@ function registerTools(server: McpServer) {
       license_number: z.string().describe("The license number to look up"),
     },
     async ({ license_number }) => {
-      const records = await querySODA({
-        $where: buildWhereClause([`license_number='${license_number.replace(/'/g, "''")}'`]),
-        $limit: "10",
-      });
+      const records = await lookupByLicenseNumber(license_number);
       if (records.length === 0) {
         return { content: [{ type: "text" as const, text: `No engineer license found with number: ${license_number}` }] };
       }
@@ -141,14 +99,7 @@ function registerTools(server: McpServer) {
       if (!license_number && !first_name && !last_name) {
         return { content: [{ type: "text" as const, text: "Error: Provide a license_number, name, or both." }] };
       }
-      const conditions: string[] = [];
-      if (license_number) conditions.push(`license_number='${license_number.replace(/'/g, "''")}'`);
-      if (first_name) conditions.push(`upper(first_name) like upper('%${first_name.replace(/'/g, "''")}%')`);
-      if (last_name) conditions.push(`upper(last_name) like upper('%${last_name.replace(/'/g, "''")}%')`);
-      const records = await querySODA({
-        $where: buildWhereClause(conditions),
-        $limit: "20",
-      });
+      const records = await verifyLicenseStatus(license_number, first_name, last_name);
       if (records.length === 0) {
         return { content: [{ type: "text" as const, text: "No matching engineer license found. Cannot verify." }] };
       }
@@ -182,21 +133,35 @@ function registerTools(server: McpServer) {
       if (!city && !county && !state) {
         return { content: [{ type: "text" as const, text: "Error: Provide at least a city, county, or state." }] };
       }
-      const conditions: string[] = [];
-      if (city) conditions.push(`upper(city)=upper('${city.replace(/'/g, "''")}')`);
-      if (county) conditions.push(`upper(county)=upper('${county.replace(/'/g, "''")}')`);
-      if (state) conditions.push(`upper(state)=upper('${state.replace(/'/g, "''")}')`);
-      if (license_status) conditions.push(`upper(license_status)=upper('${license_status.replace(/'/g, "''")}')`);
-      const records = await querySODA({
-        $where: buildWhereClause(conditions),
-        $limit: String(limit || DEFAULT_LIMIT),
-        $order: "last_name,first_name",
-      });
+      const records = await listByLocation(city, county, state, license_status, limit || DEFAULT_LIMIT);
       if (records.length === 0) {
         return { content: [{ type: "text" as const, text: "No engineers found matching the location criteria." }] };
       }
       const formatted = records.map((r, i) => `--- Result ${i + 1} ---\n${formatRecord(r)}`).join("\n\n");
       return { content: [{ type: "text" as const, text: `Found ${records.length} result(s):\n\n${formatted}` }] };
+    }
+  );
+
+  // New tool: check ingestion status
+  server.tool(
+    "ingestion_status",
+    "Check the current status of the data ingestion pipeline — how many records are loaded, what phase it's in, and when it last ran.",
+    {},
+    async () => {
+      const state = await pool.query(`SELECT * FROM ingest_state WHERE id = 1`);
+      const count = await getRecordCount();
+      const s = state.rows[0];
+      const lines = [
+        `Phase: ${s.phase}`,
+        `Initial Load Complete: ${s.initial_load_complete}`,
+        `Current Offset: ${s.current_offset}`,
+        `Total Records Ingested (cumulative): ${s.total_ingested}`,
+        `Records in Database: ${count}`,
+        `Batch Size: ${s.batch_size}`,
+        `Last Run: ${s.last_run_at || "Never"}`,
+        `Last Modified Watermark: ${s.last_modified_watermark || "Not set"}`,
+      ];
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     }
   );
 }
@@ -213,8 +178,17 @@ app.use(express.json());
 const transports: Record<string, StreamableHTTPServerTransport> = {};
 
 // Health check
-app.get("/", (_req, res) => {
-  res.json({ status: "ok", server: "idfpr-mcp-server", sessions: Object.keys(transports).length });
+app.get("/", async (_req, res) => {
+  let dbRecords = 0;
+  try {
+    dbRecords = await getRecordCount();
+  } catch { /* db not ready yet */ }
+  res.json({
+    status: "ok",
+    server: "idfpr-mcp-server",
+    sessions: Object.keys(transports).length,
+    records_in_db: dbRecords,
+  });
 });
 
 // POST /mcp — initialize new sessions and handle JSON-RPC requests
@@ -222,14 +196,12 @@ app.post("/mcp", async (req: Request, res: Response) => {
   try {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
-    // Route to existing session
     if (sessionId && transports[sessionId]) {
       console.log(`[POST] Existing session: ${sessionId}`);
       await transports[sessionId].handleRequest(req, res, req.body);
       return;
     }
 
-    // Only create new session for initialize requests
     if (isInitializeRequest(req.body)) {
       console.log("[POST] New initialize request received");
 
@@ -249,7 +221,7 @@ app.post("/mcp", async (req: Request, res: Response) => {
         }
       };
 
-      const mcpServer = new McpServer({ name: "idfpr-mcp-server", version: "1.0.0" });
+      const mcpServer = new McpServer({ name: "idfpr-mcp-server", version: "2.0.0" });
       registerTools(mcpServer);
       await mcpServer.connect(transport);
 
@@ -257,7 +229,6 @@ app.post("/mcp", async (req: Request, res: Response) => {
       return;
     }
 
-    // Not an initialize request and no valid session
     console.log("[POST] Bad request: not initialize and no valid session");
     res.status(400).json({
       jsonrpc: "2.0",
@@ -294,7 +265,23 @@ app.delete("/mcp", async (req: Request, res: Response) => {
   await transports[sessionId].handleRequest(req, res);
 });
 
-app.listen(PORT, () => {
-  console.log(`IDFPR MCP Server running on http://localhost:${PORT}`);
-  console.log(`Streamable HTTP endpoint: /mcp`);
+// ---- Start ----
+
+async function start() {
+  console.log("Initializing database schema...");
+  await initSchema();
+  console.log("Database schema ready.");
+
+  const count = await getRecordCount();
+  console.log(`Records currently in database: ${count}`);
+
+  app.listen(PORT, () => {
+    console.log(`IDFPR MCP Server running on http://localhost:${PORT}`);
+    console.log(`Streamable HTTP endpoint: /mcp`);
+  });
+}
+
+start().catch((err) => {
+  console.error("Failed to start server:", err);
+  process.exit(1);
 });
