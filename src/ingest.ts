@@ -14,9 +14,9 @@
 import { pool, initSchema } from "./db.js";
 
 const SODA_BASE = "https://data.illinois.gov/resource/pzzh-kp68.json";
-const ALLOWED_LICENSE_TYPES = ["PROF. ENGINEER", "STRUCTURAL ENGINEER"];
 const BATCH_SIZE = 2000;
-const TYPE_FILTER = `license_type in('${ALLOWED_LICENSE_TYPES.join("','")}') AND license_number IS NOT NULL AND license_number != ''`;
+// Only load active, fully licensed engineers — no interns, no expired/not-renewed
+const TYPE_FILTER = `license_status='ACTIVE' AND description in('LICENSED PROFESSIONAL ENGINEER','LICENSED STRUCTURAL ENGINEER') AND license_number IS NOT NULL AND license_number != ''`;
 
 interface SodaRecord {
   license_type: string;
