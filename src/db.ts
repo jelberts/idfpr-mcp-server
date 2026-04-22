@@ -67,9 +67,9 @@ export async function initSchema(): Promise<void> {
       initial_load_complete BOOLEAN NOT NULL DEFAULT FALSE
     );
 
-    INSERT INTO ingest_state (id, phase, current_offset)
-    VALUES (1, 'initial_load', 0)
-    ON CONFLICT (id) DO NOTHING;
+    INSERT INTO ingest_state (id, phase, current_offset, batch_size)
+    VALUES (1, 'initial_load', 0, 2000)
+    ON CONFLICT (id) DO UPDATE SET batch_size = 2000;
   `);
 }
 
