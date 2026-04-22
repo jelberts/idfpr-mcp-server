@@ -193,6 +193,18 @@ app.get("/", async (_req, res) => {
   });
 });
 
+// GET /debug-search — test the database search directly outside MCP
+app.get("/debug-search", async (req: Request, res: Response) => {
+  try {
+    const lastName = req.query.last_name as string || "Kerr";
+    const firstName = req.query.first_name as string | undefined;
+    const records = await searchByName(firstName, lastName, 10);
+    res.json({ status: "ok", count: records.length, records });
+  } catch (err) {
+    res.status(500).json({ status: "error", message: String(err) });
+  }
+});
+
 // GET & POST /ingest — trigger ingestion on demand
 const handleIngest = async (_req: Request, res: Response) => {
   try {
