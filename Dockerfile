@@ -19,14 +19,12 @@ RUN npm install --omit=dev
 
 COPY --from=builder /app/dist ./dist
 
-# Cron job: run ingestion daily at 2:00 AM UTC
-# Logs go to /var/log/ingest.log so you can inspect from the container
-RUN echo "0 2 * * * cd /app && DATABASE_URL=\$DATABASE_URL node dist/ingest.js >> /var/log/ingest.log 2>&1" > /etc/cron.d/ingest \
+# Cron job: source /etc/environment (written at startup) then run ingest
+# Logs go to /var/log/ingest.log
+RUN echo '0 2 * * * root . /etc/environment; cd /app && node dist/ingest.js >> /var/log/ingest.log 2>&1' > /etc/cron.d/ingest \
     && chmod 0644 /etc/cron.d/ingest \
-    && crontab /etc/cron.d/ingest \
     && touch /var/log/ingest.log
 
-# Startup script: export env vars for cron, start cron, then start the MCP server
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 

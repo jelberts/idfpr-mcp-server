@@ -16,6 +16,7 @@ import {
   pool,
 } from "./db.js";
 import { runIngestion } from "./ingest.js";
+import { readFileSync } from "node:fs";
 
 // ---- Config ----
 
@@ -205,6 +206,16 @@ const handleIngest = async (_req: Request, res: Response) => {
 };
 app.get("/ingest", handleIngest);
 app.post("/ingest", handleIngest);
+
+// GET /cron-log — return the cron ingestion log file
+app.get("/cron-log", (_req: Request, res: Response) => {
+  try {
+    const log = readFileSync("/var/log/ingest.log", "utf-8");
+    res.type("text/plain").send(log || "(log is empty — cron has not run yet)");
+  } catch {
+    res.type("text/plain").send("(log file not found)");
+  }
+});
 
 // GET /reset-ingest — wipe data and restart ingestion from scratch
 app.get("/reset-ingest", async (_req: Request, res: Response) => {
