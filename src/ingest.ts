@@ -70,12 +70,23 @@ async function bulkUpsert(records: SodaRecord[]): Promise<number> {
       lastmodifieddate, ingested_at
     )
     SELECT
-      unnest($1::text[]), unnest($2::text[]), unnest($3::text[]), unnest($4::text[]),
-      unnest($5::text[]), unnest($6::text[]), unnest($7::text[]), unnest($8::text[]),
-      unnest($9::text[]), unnest($10::text[]), unnest($11::text[]), unnest($12::text[]),
-      unnest($13::text[]), unnest($14::text[]), unnest($15::text[]), unnest($16::text[]),
-      unnest($17::text[]), unnest($18::text[]), unnest($19::text[]), unnest($20::text[]),
-      unnest($21::text[]), unnest($22::text[]), NOW()
+      license_number, license_type, description, license_status,
+      business, title, first_name, middle, last_name, prefix, suffix,
+      business_name, businessdba, original_issue_date, effective_date,
+      expiration_date, city, state, zip, county, ever_disciplined,
+      lastmodifieddate, NOW()
+    FROM unnest(
+      $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[],
+      $7::text[], $8::text[], $9::text[], $10::text[], $11::text[], $12::text[],
+      $13::text[], $14::text[], $15::text[], $16::text[], $17::text[], $18::text[],
+      $19::text[], $20::text[], $21::text[], $22::text[]
+    ) AS t(
+      license_number, license_type, description, license_status,
+      business, title, first_name, middle, last_name, prefix, suffix,
+      business_name, businessdba, original_issue_date, effective_date,
+      expiration_date, city, state, zip, county, ever_disciplined,
+      lastmodifieddate
+    )
     ON CONFLICT (license_number) DO UPDATE SET
       license_type        = EXCLUDED.license_type,
       description         = EXCLUDED.description,
