@@ -59,6 +59,11 @@ async function fetchFromSoda(params: Record<string, string>): Promise<SodaRecord
 async function bulkUpsert(records: SodaRecord[]): Promise<number> {
   if (records.length === 0) return 0;
 
+  // Deduplicate by license_number — keep the last occurrence
+  const seen = new Map<string, SodaRecord>();
+  for (const r of records) seen.set(r.license_number, r);
+  records = Array.from(seen.values());
+
   const s = (field: keyof SodaRecord) => records.map(r => r[field] ?? null);
 
   await pool.query(
